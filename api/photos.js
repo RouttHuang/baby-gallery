@@ -1,7 +1,7 @@
 // api/photos.js - Vercel Serverless Function to fetch photos from Huawei Cloud Drive
 
 // 华为云Drive Kit API配置
-const HUAWEI_API_BASE = 'https://drive-api.cloud.huawei.com/v1';
+const HUAWEI_API_BASE = 'https://openapi.cloud.huawei.com/drive/v1';
 
 /**
  * 获取华为云Drive Kit的访问令牌（使用客户端模式）
@@ -49,24 +49,28 @@ async function getAccessToken() {
  */
 async function getFolderId(accessToken, folderName = '宝宝相册') {
   try {
-    // 首先获取根目录下的所有文件夹
-    const response = await fetch(`${HUAWEI_API_BASE}/drive/root/children`, {
+    // 搜索指定名称的文件夹
+    const response = await fetch(`${HUAWEI_API_BASE}/files:search`, {
+      method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        query: `name = '${folderName}' and mimeType = 'application/vnd.huawei-cloud-drive.folder'`,
+        fields: 'files(fileId, name, mimeType, parentFolderId)'
+      })
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to list root folder: ${response.statusText}`);
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Failed to search folder: ${response.statusText} - ${JSON.stringify(errorData)}`);
     }
 
     const data = await response.json();
     
     // 查找指定名称的文件夹
-    const folder = data.files.find(file => 
-      file.name === folderName && file.mimeType === 'application/vnd.huawei-cloud-drive.folder'
-    );
+    const folder = data.files?.[0];
 
     if (!folder) {
       throw new Error(`Folder "${folderName}" not found`);
@@ -87,60 +91,28 @@ async function getFolderId(accessToken, folderName = '宝宝相册') {
  */
 async function getPhotosInFolder(accessToken, folderId) {
   try {
-    const response = await fetch(`${HUAWEI_API_BASE}/drive/files`, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to list files: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    // 过滤出图片文件并属于指定文件夹
-    const photos = data.files.filter(file => 
-      file.parentFolderId === folderId && 
-      file.mimeType.startsWith('image/')
-    );
-
-    return photos;
-  } catch (error) {
-    console.error('Error getting photos:', error);
-    throw error;
-  }
-}
-
-/**
- * 获取图片的临时访问链接
- * @param {string} accessToken - 访问令牌
- * @param {string} fileId - 文件ID
- * @returns {Promise<string>} 临时访问链接
- */
-async function getFileUrl(accessToken, fileId) {
-  try {
-    const response = await fetch(`${HUAWEI_API_BASE}/drive/files/${fileId}/link`, {
+    // 获取文件夹下的所有文件
+    const response = await fetch(`${HUAWEI_API_BASE}/files:search`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        expireSec: 3600, // 链接有效期1小时
-        auth: false, // 不需要额外认证
-      }),
+        query: `parentFolderId = '${folderId}' and mimeType startsWith 'image/'`,
+        fields: 'files(fileId, name, mimeType, size, modifiedTime, downloadUrl)'
+      })
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to get file link: ${response.statusText}`);
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Failed to list files: ${response.statusText} - ${JSON.stringify(errorData)}`);
     }
 
     const data = await response.json();
-    return data.downloadLink;
+    return data.files || [];
   } catch (error) {
-    console.error('Error getting file URL:', error);
+    console.error('Error getting photos:', error);
     throw error;
   }
 }
@@ -175,17 +147,15 @@ export default async function handler(req, res) {
     // 3. 获取文件夹中的所有图片
     const photos = await getPhotosInFolder(accessToken, folderId);
     
-    // 4. 为每个图片获取临时访问链接
-    const photosWithUrls = await Promise.all(
-      photos.map(async (photo) => ({
-        id: photo.fileId,
-        url: await getFileUrl(accessToken, photo.fileId),
-        title: photo.name,
-        mimeType: photo.mimeType,
-        size: photo.size,
-        modifiedTime: photo.modifiedTime,
-      }))
-    );
+    // 4. 格式化图片数据
+    const photosWithUrls = photos.map(photo => ({
+      id: photo.fileId,
+      url: photo.downloadUrl || `https://openapi.cloud.huawei.com/drive/v1/files/${photo.fileId}/content?access_token=${accessToken}`,
+      title: photo.name,
+      mimeType: photo.mimeType,
+      size: photo.size,
+      modifiedTime: photo.modifiedTime,
+    }));
 
     // 返回图片列表
     return res.status(200).json(photosWithUrls);
@@ -193,7 +163,8 @@ export default async function handler(req, res) {
     console.error('Error in photos API:', error);
     return res.status(500).json({
       error: 'Failed to fetch photos from Huawei Cloud Drive',
-      details: error.message
+      details: error.message,
+      stack: error.stack
     });
   }
 }
