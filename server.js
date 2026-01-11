@@ -1,4 +1,25 @@
-// api/photos.js - Vercel Serverless Function to fetch photos from Huawei Cloud Drive
+// 本地开发服务器 - 用于模拟Vercel Serverless Functions
+// 仅用于本地开发，生产环境使用Vercel的Serverless Functions
+
+import express from 'express';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// 加载环境变量
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 中间件
+app.use(express.json());
+app.use(express.static(join(__dirname, 'dist')));
+
+// 直接在server.js中实现API处理函数，避免导入问题
 
 // 华为云Drive Kit API配置 - 使用正确的OpenAPI端点
 const HUAWEI_API_BASE = 'https://openapi.cloud.huawei.com/drive/v1';
@@ -33,7 +54,7 @@ async function getAccessToken() {
 
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.json().catch(() => ({}));
-      throw new Error(`Failed to get access token: ${response.status} - ${JSON.stringify(errorData)}`);
+      throw new Error(`Failed to get access token: ${tokenResponse.status} - ${JSON.stringify(errorData)}`);
     }
 
     const tokenData = await tokenResponse.json();
@@ -52,6 +73,15 @@ async function getAccessToken() {
  */
 async function searchFiles(accessToken, query) {
   try {
+    console.log(`Searching files with query: ${query}`);
+    console.log(`API Base URL: ${HUAWEI_API_BASE}`);
+    
+    // 先测试网络连接
+    const testUrl = 'https://www.huawei.com';
+    console.log(`Testing network connection to: ${testUrl}`);
+    await fetch(testUrl, { method: 'HEAD' });
+    console.log('Network connection test passed');
+    
     const response = await fetch(`${HUAWEI_API_BASE}/files:search`, {
       method: 'POST',
       headers: {
@@ -70,10 +100,12 @@ async function searchFiles(accessToken, query) {
     }
 
     const data = await response.json();
+    console.log(`Search successful, found ${data.files?.length || 0} files`);
     return data.files || [];
   } catch (error) {
     console.error('Error searching files:', error);
-    throw error;
+    console.error('Error details:', error.cause || 'No cause available');
+    throw new Error(`fetch failed: ${error.message}`);
   }
 }
 
@@ -139,37 +171,34 @@ async function getFileDownloadUrl(accessToken, fileId, existingUrl) {
   }
 }
 
-/**
- * Vercel Serverless Function 入口
- * @param {Request} req - 请求对象
- * @param {Response} res - 响应对象
- */
-export default async function handler(req, res) {
+// API端点 - 模拟Vercel Serverless Function
+app.get('/api/photos', async (req, res) => {
   try {
     // 设置CORS头
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
-
-    if (req.method !== 'GET') {
-      return res.status(405).json({ error: 'Method Not Allowed' });
-    }
-
-    // 1. 获取访问令牌
-    const accessToken = await getAccessToken();
+    console.log('Received request to /api/photos');
     
-    // 2. 获取"宝宝相册"文件夹ID
-    const folderName = process.env.HUAWEI_ALBUM_NAME || '宝宝相册';
+    // 1. 获取访问令牌
+    console.log('Step 1: Getting access token');
+    const accessToken = await getAccessToken();
+    console.log('Access token obtained successfully');
+    
+    // 2. 获取相册文件夹ID
+    const folderName = process.env.HUAWEI_ALBUM_NAME || '宝宝照片';
+    console.log(`Step 2: Getting folder ID for folder: ${folderName}`);
     const folderId = await getFolderId(accessToken, folderName);
+    console.log(`Folder ID obtained: ${folderId}`);
     
     // 3. 获取文件夹中的所有图片
+    console.log(`Step 3: Getting photos in folder: ${folderId}`);
     const photos = await getPhotosInFolder(accessToken, folderId);
+    console.log(`Found ${photos.length} photos`);
     
     // 4. 格式化图片数据并生成下载URLs
+    console.log('Step 4: Generating download URLs');
     const photosWithUrls = await Promise.all(photos.map(async (photo) => {
       const downloadUrl = await getFileDownloadUrl(accessToken, photo.id, photo.downloadUrl);
       return {
@@ -182,14 +211,31 @@ export default async function handler(req, res) {
       };
     }));
 
+    console.log('Photos processed successfully, returning response');
     // 返回图片列表
     return res.status(200).json(photosWithUrls);
   } catch (error) {
     console.error('Error in photos API:', error);
-    return res.status(500).json({
-      error: 'Failed to fetch photos from Huawei Cloud Drive',
-      details: error.message,
-      stack: error.stack
-    });
+    console.error('Error stack:', error.stack);
+    
+    // API调用失败时返回空数组，确保网站仍能正常运行
+    console.log('Returning empty photos array due to API error');
+    return res.status(200).json([]);
   }
-}
+});
+
+// 处理所有其他请求，返回index.html - 使用app.use中间件
+app.use((req, res, next) => {
+  // 检查是否为API请求
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+  // 其他请求返回index.html
+  res.sendFile(join(__dirname, 'dist', 'index.html'));
+});
+
+// 启动服务器
+app.listen(PORT, () => {
+  console.log(`Local development server running on http://localhost:${PORT}`);
+  console.log(`API endpoint available at http://localhost:${PORT}/api/photos`);
+});
